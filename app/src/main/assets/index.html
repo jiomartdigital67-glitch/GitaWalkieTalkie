@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Group Walkie-Talkie</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        * { box-sizing: border-box; user-select: none; -webkit-user-select: none; font-family: sans-serif; }
+        body { background: #121417; color: #fff; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
+        .radio-body { background: linear-gradient(145deg, #1e2228, #171a1f); border: 3px solid #2e343d; border-radius: 30px; width: 92%; max-width: 380px; padding: 22px 20px; box-shadow: 0 20px 50px rgba(0,0,0,0.8); display: flex; flex-direction: column; align-items: center; position: relative; }
+        .antenna { position: absolute; top: -45px; right: 45px; width: 18px; height: 45px; background: #22262c; border-radius: 8px 8px 0 0; border: 2px solid #2e343d; border-bottom: none; }
+        .screen { background: #0d1b12; border: 2px solid #2a3b30; border-radius: 12px; width: 100%; padding: 14px; margin-bottom: 16px; text-align: center; }
+        .status-bar { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #4ade80; margin-bottom: 6px; }
+        .user-badge { background: rgba(74, 222, 128, 0.15); padding: 2px 8px; border-radius: 10px; font-weight: bold; }
+        .led { width: 10px; height: 10px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+        .led.connected { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+        .led.talking { background: #f59e0b; box-shadow: 0 0 12px #f59e0b; }
+        .screen-text { font-family: monospace; font-size: 18px; font-weight: bold; color: #4ade80; margin: 4px 0; }
+        .sub-status { font-size: 12px; color: #86efac; }
+        .setup-box { width: 100%; display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px; }
+        input { background: #0f1115; border: 1px solid #374151; color: #fff; padding: 12px; border-radius: 10px; font-size: 15px; text-align: center; outline: none; }
+        input#channelCode { text-transform: uppercase; }
+        button.connect-btn { width: 100%; padding: 12px; border: none; border-radius: 10px; font-weight: bold; font-size: 15px; background: #2563eb; color: white; }
+        button.connect-btn:disabled { background: #374151; color: #9ca3af; }
+        .speaker-grill { width: 80%; display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; margin: 12px 0 20px 0; }
+        .hole { height: 6px; background: #0b0d0f; border-radius: 3px; }
+        .ptt-btn { width: 145px; height: 145px; border-radius: 50%; background: radial-gradient(circle at 30% 30%, #ef4444, #991b1b); border: 6px solid #272b33; box-shadow: 0 10px 25px rgba(239, 68, 68, 0.3); color: white; font-size: 15px; font-weight: bold; display: flex; flex-direction: column; justify-content: center; align-items: center; touch-action: none; }
+        .ptt-btn:active, .ptt-btn.active { transform: scale(0.94); background: radial-gradient(circle at 30% 30%, #f59e0b, #b45309); }
+        .ptt-btn:disabled { background: #374151; box-shadow: none; color: #6b7280; }
+    </style>
+</head>
+<body>
+<div class="radio-body">
+    <div class="antenna"></div>
+    <div class="screen">
+        <div class="status-bar">
+            <span>PTT-RADIO</span>
+            <span class="user-badge" id="userCountBadge">ऑनलाइन: 0</span>
+            <div class="led" id="statusLed"></div>
+        </div>
+        <div class="screen-text" id="mainDisplay">OFFLINE</div>
+        <div class="sub-status" id="subDisplay">नाम और चैनल कोड डालकर जुड़ें</div>
+    </div>
+    <div class="setup-box">
+        <input type="text" id="userName" placeholder="आपका नाम (जैसे: उज्ज्वल)" maxlength="15">
+        <input type="text" id="channelCode" placeholder="ग्रुप चैनल कोड (जैसे: GITA99)" maxlength="15">
+        <button class="connect-btn" id="joinBtn" onclick="joinGroupChannel()">CONNECT (जुड़ें)</button>
+    </div>
+    <div class="speaker-grill">
+        <div class="hole"></div><div class="hole"></div><div class="hole"></div><div class="hole"></div>
+        <div class="hole"></div><div class="hole"></div><div class="hole"></div><div class="hole"></div>
+        <div class="hole"></div><div class="hole"></div><div class="hole"></div><div class="hole"></div>
+        <div class="hole"></div><div class="hole"></div><div class="hole"></div><div class="hole"></div>
+    </div>
+    <button class="ptt-btn" id="pttBtn" disabled>
+        <span style="font-size:30px;margin-bottom:4px;">🎙️</span>
+        <span>HOLD TO TALK</span>
+    </button>
+</div>
+<div id="audioContainer"></div>
+
+<script>
+    let peer = null, localStream = null, audioTrack = null, audioCtx = null;
+    let myName = "User", channelCode = "", isHost = false;
+    const connectedPeers = new Set(), dataConnections = new Map();
+
+    const mainDisplay = document.getElementById('mainDisplay');
+    const subDisplay = document.getElementById('subDisplay');
+    const statusLed = document.getElementById('statusLed');
+    const pttBtn = document.getElementById('pttBtn');
+    const joinBtn = document.getElementById('joinBtn');
+    const userCountBadge = document.getElementById('userCountBadge');
+    const audioContainer = document.getElementById('audioContainer');
+
+    function playBeep(type) {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        if (type === 'start') {
+            osc.frequency.setValueAtTime(900, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(1250, audioCtx.currentTime + 0.08);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.08);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.08);
+        } else {
+            osc.frequency.setValueAtTime(1100, audioCtx.currentTime);
+            osc.frequency.setValueAtTime(750, audioCtx.currentTime + 0.06);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.14);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.14);
+        }
+    }
+
+    function updateOnlineCount() {
+        userCountBadge.innerText = "ऑनलाइन: " + (connectedPeers.size + 1);
+        if (connectedPeers.size > 0) {
+            statusLed.classList.add('connected');
+            pttBtn.disabled = false;
+        } else {
+            statusLed.classList.remove('connected');
+            pttBtn.disabled = true;
+        }
+    }
+
+    async function joinGroupChannel() {
+        const nameInput = document.getElementById('userName').value.trim();
+        const codeInput = document.getElementById('channelCode').value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+        if (!codeInput) { alert("कृपया चैनल कोड डालें!"); return; }
+
+        myName = nameInput || "सदस्य-" + Math.floor(10 + Math.random() * 89);
+        channelCode = codeInput;
+        joinBtn.disabled = true;
+        document.getElementById('userName').disabled = true;
+        document.getElementById('channelCode').disabled = true;
+        mainDisplay.innerText = "CONNECTING...";
+
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            audioTrack = localStream.getAudioTracks()[0];
+            audioTrack.enabled = false;
+            initPeer("grp-ptt-host-" + channelCode, true);
+        } catch (err) {
+            alert("माइक्रोफ़ोन की अनुमति नहीं मिली!");
+            location.reload();
+        }
+    }
+
+    function initPeer(targetId, tryAsHost) {
+        const hostId = "grp-ptt-host-" + channelCode;
+        peer = tryAsHost ? new Peer(hostId) : new Peer();
+
+        peer.on('open', () => {
+            isHost = tryAsHost;
+            mainDisplay.innerText = "CH: " + channelCode;
+            updateOnlineCount();
+            if (isHost) {
+                subDisplay.innerText = "चैनल चालू! साथियों का इंतज़ार...";
+            } else {
+                subDisplay.innerText = "चैनल से जुड़ रहे हैं...";
+                connectToMember(hostId);
+            }
+        });
+
+        peer.on('call', (call) => { call.answer(localStream); handleMediaCall(call); });
+        peer.on('connection', (conn) => { setupDataConnection(conn); });
+        peer.on('error', (err) => {
+            if (err.type === 'unavailable-id' && tryAsHost) {
+                peer.destroy();
+                initPeer(null, false);
+            } else {
+                subDisplay.innerText = "कनेक्शन त्रुटि!";
+            }
+        });
+    }
+
+    function connectToMember(memberId) {
+        if (memberId === peer.id || connectedPeers.has(memberId)) return;
+        const call = peer.call(memberId, localStream);
+        if (call) handleMediaCall(call);
+        const conn = peer.connect(memberId);
+        if (conn) setupDataConnection(conn);
+    }
+
+    function handleMediaCall(call) {
+        const remoteId = call.peer;
+        connectedPeers.add(remoteId);
+        updateOnlineCount();
+        call.on('stream', (remoteStream) => {
+            let audioEl = document.getElementById('audio-' + remoteId);
+            if (!audioEl) {
+                audioEl = document.createElement('audio');
+                audioEl.id = 'audio-' + remoteId;
+                audioEl.autoplay = true;
+                audioEl.playsInline = true;
+                audioContainer.appendChild(audioEl);
+            }
+            audioEl.srcObject = remoteStream;
+            subDisplay.innerText = "तैयार! बोलने के लिए बटन दबाएँ";
+        });
+        call.on('close', () => removeMember(remoteId));
+    }
+
+    function setupDataConnection(conn) {
+        const remoteId = conn.peer;
+        dataConnections.set(remoteId, conn);
+        conn.on('open', () => {
+            connectedPeers.add(remoteId);
+            updateOnlineCount();
+            if (isHost) conn.send({ type: 'peer-list', peers: Array.from(connectedPeers) });
+        });
+        conn.on('data', (data) => {
+            if (data.type === 'peer-list') {
+                data.peers.forEach(id => { if (id !== peer.id && !connectedPeers.has(id)) connectToMember(id); });
+            } else if (data.type === 'talking') {
+                if (data.status) {
+                    statusLed.classList.add('talking');
+                    mainDisplay.innerText = "🔊 " + data.name.toUpperCase();
+                    subDisplay.innerText = "बोल रहे हैं...";
+                    playBeep('start');
+                } else {
+                    statusLed.classList.remove('talking');
+                    mainDisplay.innerText = "CH: " + channelCode;
+                    subDisplay.innerText = "सुनने के लिए तैयार";
+                    playBeep('end');
+                }
+            }
+        });
+        conn.on('close', () => removeMember(remoteId));
+    }
+
+    function removeMember(remoteId) {
+        connectedPeers.delete(remoteId);
+        dataConnections.delete(remoteId);
+        const audioEl = document.getElementById('audio-' + remoteId);
+        if (audioEl) audioEl.remove();
+        updateOnlineCount();
+    }
+
+    function broadcastSignal(isTalking) {
+        dataConnections.forEach(conn => { if (conn.open) conn.send({ type: 'talking', status: isTalking, name: myName }); });
+    }
+
+    function startTalking(e) {
+        if (e) e.preventDefault();
+        if (pttBtn.disabled || !audioTrack) return;
+        audioTrack.enabled = true;
+        pttBtn.classList.add('active');
+        statusLed.classList.add('talking');
+        mainDisplay.innerText = "TRANSMITTING...";
+        subDisplay.innerText = "आपकी आवाज़ जा रही है";
+        playBeep('start');
+        broadcastSignal(true);
+    }
+
+    function stopTalking(e) {
+        if (e) e.preventDefault();
+        if (!audioTrack || !audioTrack.enabled) return;
+        audioTrack.enabled = false;
+        pttBtn.classList.remove('active');
+        statusLed.classList.remove('talking');
+        mainDisplay.innerText = "CH: " + channelCode;
+        subDisplay.innerText = "सुनने के लिए तैयार";
+        playBeep('end');
+        broadcastSignal(false);
+    }
+
+    pttBtn.addEventListener('mousedown', startTalking);
+    pttBtn.addEventListener('mouseup', stopTalking);
+    pttBtn.addEventListener('mouseleave', stopTalking);
+    pttBtn.addEventListener('touchstart', startTalking, { passive: false });
+    pttBtn.addEventListener('touchend', stopTalking, { passive: false });
+</script>
+</body>
+</html>
