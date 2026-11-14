@@ -14,10 +14,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Build Debug APK
+      - name: Prepare Android Project & Build APK
         run: |
+          mkdir -p app/src/main/java/com/gita/walkietalkie
+          mkdir -p app/src/main/assets
+
           echo "rootProject.name = 'WalkieTalkie'" > settings.gradle
           echo "include ':app'" >> settings.gradle
+
           cat << 'EOF' > build.gradle
           buildscript {
             repositories { google(); mavenCentral() }
@@ -27,6 +31,81 @@ jobs:
             repositories { google(); mavenCentral() }
           }
           EOF
+
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          EOF
+
+          cat << 'EOF' > app/build.gradle
+          apply plugin: 'com.android.application'
+          android {
+            namespace 'com.gita.walkietalkie'
+            compileSdk 34
+            defaultConfig {
+              applicationId "com.gita.walkietalkie"
+              minSdk 24
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }
+          }
+          dependencies {
+            implementation 'androidx.appcompat:appcompat:1.6.1'
+          }
+          EOF
+
+          if [ ! -f app/src/main/AndroidManifest.xml ]; then
+            cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <uses-permission android:name="android.permission.RECORD_AUDIO" />
+            <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+            <application android:label="Gita WalkieTalkie" android:usesCleartextTraffic="true">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          fi
+
+          if [ ! -f app/src/main/java/com/gita/walkietalkie/MainActivity.java ]; then
+            cat << 'EOF' > app/src/main/java/com/gita/walkietalkie/MainActivity.java
+          package com.gita.walkietalkie;
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+            @Override
+            protected void onCreate(Bundle savedInstanceState) {
+              super.onCreate(savedInstanceState);
+              WebView webView = new WebView(this);
+              WebSettings settings = webView.getSettings();
+              settings.setJavaScriptEnabled(true);
+              settings.setDomStorageEnabled(true);
+              settings.setMediaPlaybackRequiresUserGesture(false);
+              webView.setWebViewClient(new WebViewClient());
+              webView.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public void onPermissionRequest(final PermissionRequest request) {
+                  request.grant(request.getResources());
+                }
+              });
+              webView.loadUrl("file:///android_asset/index.html");
+              setContentView(webView);
+            }
+          }
+          EOF
+          fi
+
           gradle wrapper --gradle-version 8.5
           chmod +x gradlew
           ./gradlew assembleDebug
